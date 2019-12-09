@@ -22,7 +22,7 @@ fn make_permutations(input: Vec<u32>, permutation: Vec<u32>, permutations: &mut 
     }
 }
 
-fn part1() -> i32 {
+fn part1() -> i64 {
     let program = intcode::Program::from_file("input");
 
     // Make all permutations of stage inputs.
@@ -38,7 +38,7 @@ fn part1() -> i32 {
         // Execute each stage - the input is first taken from the
         // input permutation, and then the output from the previous stage.
         for input in input_perm {
-            let input = [input as i32, stage_output];
+            let input = [input as i64, stage_output];
             let mut input_iter = input.iter();
             program.execute_ex(
                 || *input_iter.next().unwrap(),
@@ -57,10 +57,10 @@ fn part1() -> i32 {
 fn spawn_amp(
     amp: intcode::Program,
     phase: u32,
-    input: Option<i32>,
-    tx: Sender<i32>,
-    rx: Receiver<i32>,
-) -> thread::JoinHandle<Option<i32>> {
+    input: Option<i64>,
+    tx: Sender<i64>,
+    rx: Receiver<i64>,
+) -> thread::JoinHandle<Option<i64>> {
     return thread::spawn(move || {
         let mut set_phase = false;
         let mut initial_input = input;
@@ -69,7 +69,7 @@ fn spawn_amp(
         let input_fn = || {
             if !set_phase {
                 set_phase = true;
-                return phase as i32;
+                return phase as i64;
             } else if let Some(i) = initial_input {
                 initial_input = None;
                 return i;
@@ -91,7 +91,7 @@ fn spawn_amp(
     });
 }
 
-fn part2() -> i32 {
+fn part2() -> i64 {
     // Make all permutations of stage inputs.
     let mut permutations = Vec::new();
     make_permutations(vec![5, 6, 7, 8, 9], vec![], &mut permutations);
@@ -104,11 +104,11 @@ fn part2() -> i32 {
         // amplifier are used as the inputs for the next. Do this by running
         // each amplifier's program in a separate thread, and passing values
         // between the threads using channels.
-        let (a_tx, b_rx): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-        let (b_tx, c_rx): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-        let (c_tx, d_rx): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-        let (d_tx, e_rx): (Sender<i32>, Receiver<i32>) = mpsc::channel();
-        let (e_tx, a_rx): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+        let (a_tx, b_rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+        let (b_tx, c_rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+        let (c_tx, d_rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+        let (d_tx, e_rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+        let (e_tx, a_rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
 
         let mut prg_a = amp_program.clone();
         prg_a.set_name("Amplifier A");
