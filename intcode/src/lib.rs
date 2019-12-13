@@ -34,6 +34,11 @@ enum ParameterMode {
     RELATIVE,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum ExecutionError {
+    ProgramHalt,
+}
+
 #[derive(Debug)]
 struct Instruction {
     op: Operation,
@@ -114,8 +119,12 @@ fn write(mem: &mut Vec<i64>, value: i64, position: i64, param_mode: ParameterMod
 
 #[derive(Clone)]
 pub struct Program {
-    program: Vec<i64>,
     name: String,
+    mem: Vec<i64>,
+    mem_offset: i64,
+    instruction_index: usize,
+    output: Option<i64>,
+    halted: bool,
 }
 
 impl Program {
@@ -127,8 +136,12 @@ impl Program {
             .collect();
 
         return Program {
-            program: instructions,
             name: String::new(),
+            mem: instructions,
+            mem_offset: 0,
+            instruction_index: 0,
+            output: None,
+            halted: false,
         };
     }
 
@@ -162,123 +175,155 @@ impl Program {
         self.execute_ex(input_fn, |val| println!("Output: {}", val));
     }
 
-    pub fn execute_ex<I, O>(&self, mut input_fn: I, mut output_fn: O)
+    // Execute the program without mutating it. This mainly exists for
+    // backwards compatability with earlier days' tasks.
+    pub fn execute_ex<I: FnMut() -> i64, O: FnMut(i64) -> ()>(
+        &self,
+        mut input_fn: I,
+        mut output_fn: O,
+    ) {
+        // Execution modifies the program, so clone it first so we don't
+        // mutate the original program, and the caller can execute it again
+        // with the same results.
+        let mut prg = self.clone();
+        while prg.instruction_index < self.mem.len() && !self.halted {
+            let _ = prg.step(&mut input_fn, &mut output_fn);
+        }
+    }
+
+    pub fn poke(&mut self, addr: i64, val: i64) {
+        write(&mut self.mem, val, addr, ParameterMode::POSITION, 0);
+    }
+
+    pub fn is_halted(&self) -> bool {
+        return self.halted;
+    }
+
+    pub fn step<I, O>(&mut self, input_fn: &mut I, output_fn: &mut O) -> Result<(), ExecutionError>
     where
         I: FnMut() -> i64,
         O: FnMut(i64) -> (),
     {
-        // Execution modifies the program buffer, so clone it first so we can execute
-        // this program again if required.
-        let mut mem = self.program.clone();
-        let mut base = 0;
+        let instruction = Instruction::new(&self.mem, self.instruction_index);
 
-        let mut i = 0;
-        while i < self.program.len() {
-            let instruction = Instruction::new(&mem, i);
-            println!("{} {}, {:?}", self.name, i, instruction);
-            i += 1;
+        if self.halted {
+            return Err(ExecutionError::ProgramHalt);
+        }
 
-            let mut binary_op = |op_fn: &dyn Fn(i64, i64) -> i64, base: i64| {
-                let val1 = read(
-                    &mem,
+        /*
+        println!(
+            "{} {}, {:?}",
+            self.name, self.instruction_index, instruction
+        );
+        */
+
+        self.instruction_index += 1;
+        self.output = None;
+
+        let mut binary_op = |op_fn: &dyn Fn(i64, i64) -> i64| {
+            let val1 = read(
+                &self.mem,
+                instruction.params[0],
+                instruction.param_modes[0],
+                self.mem_offset,
+            );
+            let val2 = read(
+                &self.mem,
+                instruction.params[1],
+                instruction.param_modes[1],
+                self.mem_offset,
+            );
+            write(
+                &mut self.mem,
+                op_fn(val1, val2),
+                instruction.params[2],
+                instruction.param_modes[2],
+                self.mem_offset,
+            );
+            self.instruction_index += 3;
+        };
+
+        match instruction.op {
+            Operation::ADD => binary_op(&|v1, v2| v1 + v2),
+            Operation::MUL => binary_op(&|v1, v2| v1 * v2),
+            Operation::LT => binary_op(&|v1, v2| if v1 < v2 { 1 } else { 0 }),
+            Operation::EQ => binary_op(&|v1, v2| if v1 == v2 { 1 } else { 0 }),
+            Operation::IN => {
+                write(
+                    &mut self.mem,
+                    input_fn(),
                     instruction.params[0],
                     instruction.param_modes[0],
-                    base,
+                    self.mem_offset,
                 );
-                let val2 = read(
-                    &mem,
+                self.instruction_index += 1;
+            }
+            Operation::OUT => {
+                let val = read(
+                    &self.mem,
+                    instruction.params[0],
+                    instruction.param_modes[0],
+                    self.mem_offset,
+                );
+                self.output = Some(val);
+                output_fn(val);
+                self.instruction_index += 1;
+            }
+            Operation::JIT => {
+                let val = read(
+                    &self.mem,
+                    instruction.params[0],
+                    instruction.param_modes[0],
+                    self.mem_offset,
+                );
+                let dst = read(
+                    &self.mem,
                     instruction.params[1],
                     instruction.param_modes[1],
-                    base,
+                    self.mem_offset,
                 );
-                write(
-                    &mut mem,
-                    op_fn(val1, val2),
-                    instruction.params[2],
-                    instruction.param_modes[2],
-                    base,
-                );
-                i += 3;
-            };
-
-            match instruction.op {
-                Operation::ADD => binary_op(&|v1, v2| v1 + v2, base),
-                Operation::MUL => binary_op(&|v1, v2| v1 * v2, base),
-                Operation::LT => binary_op(&|v1, v2| if v1 < v2 { 1 } else { 0 }, base),
-                Operation::EQ => binary_op(&|v1, v2| if v1 == v2 { 1 } else { 0 }, base),
-                Operation::IN => {
-                    write(
-                        &mut mem,
-                        input_fn(),
-                        instruction.params[0],
-                        instruction.param_modes[0],
-                        base,
-                    );
-                    i += 1;
-                }
-                Operation::OUT => {
-                    let val = read(
-                        &mem,
-                        instruction.params[0],
-                        instruction.param_modes[0],
-                        base,
-                    );
-                    output_fn(val);
-                    i += 1;
-                }
-                Operation::JIT => {
-                    let val = read(
-                        &mem,
-                        instruction.params[0],
-                        instruction.param_modes[0],
-                        base,
-                    );
-                    let dst = read(
-                        &mem,
-                        instruction.params[1],
-                        instruction.param_modes[1],
-                        base,
-                    );
-                    if val != 0 {
-                        i = dst as usize;
-                    } else {
-                        i += 2;
-                    }
-                }
-                Operation::JIF => {
-                    let val = read(
-                        &mem,
-                        instruction.params[0],
-                        instruction.param_modes[0],
-                        base,
-                    );
-                    let dst = read(
-                        &mem,
-                        instruction.params[1],
-                        instruction.param_modes[1],
-                        base,
-                    );
-                    if val == 0 {
-                        i = dst as usize;
-                    } else {
-                        i += 2;
-                    }
-                }
-                Operation::BASE => {
-                    let val = read(
-                        &mem,
-                        instruction.params[0],
-                        instruction.param_modes[0],
-                        base,
-                    );
-                    base += val;
-                    i += 1;
-                }
-                Operation::HALT => {
-                    break;
+                if val != 0 {
+                    self.instruction_index = dst as usize;
+                } else {
+                    self.instruction_index += 2;
                 }
             }
+            Operation::JIF => {
+                let val = read(
+                    &self.mem,
+                    instruction.params[0],
+                    instruction.param_modes[0],
+                    self.mem_offset,
+                );
+                let dst = read(
+                    &self.mem,
+                    instruction.params[1],
+                    instruction.param_modes[1],
+                    self.mem_offset,
+                );
+                if val == 0 {
+                    self.instruction_index = dst as usize;
+                } else {
+                    self.instruction_index += 2;
+                }
+            }
+            Operation::BASE => {
+                let val = read(
+                    &self.mem,
+                    instruction.params[0],
+                    instruction.param_modes[0],
+                    self.mem_offset,
+                );
+                self.mem_offset += val;
+                self.instruction_index += 1;
+            }
+            Operation::HALT => {
+                self.halted = true;
+                return Err(ExecutionError::ProgramHalt);
+            }
         }
+
+        Ok(())
     }
 }
 
