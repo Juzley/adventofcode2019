@@ -98,7 +98,7 @@ fn calc_fuel_for_ore(ore: u64, reactions: &ReactionMap) -> u64 {
     }
 
     // Binary search to find the highest amount of fuel we can
-    // produce without using all the fuel.
+    // produce without using all the ore.
     loop {
         current = (upper - lower) / 2 + lower;
 
