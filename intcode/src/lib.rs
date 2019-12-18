@@ -123,8 +123,8 @@ pub struct Program {
     mem: Vec<i64>,
     mem_offset: i64,
     instruction_index: usize,
-    output: Option<i64>,
     halted: bool,
+    debug: bool,
 }
 
 impl Program {
@@ -140,8 +140,8 @@ impl Program {
             mem: instructions,
             mem_offset: 0,
             instruction_index: 0,
-            output: None,
             halted: false,
+            debug: false,
         };
     }
 
@@ -186,7 +186,7 @@ impl Program {
         // mutate the original program, and the caller can execute it again
         // with the same results.
         let mut prg = self.clone();
-        while prg.instruction_index < self.mem.len() && !self.halted {
+        while prg.instruction_index < self.mem.len() && !prg.halted {
             let _ = prg.step(&mut input_fn, &mut output_fn);
         }
     }
@@ -197,6 +197,10 @@ impl Program {
 
     pub fn is_halted(&self) -> bool {
         return self.halted;
+    }
+
+    pub fn enable_debug(&mut self, enable: bool) {
+        self.debug = enable;
     }
 
     pub fn step<I, O>(&mut self, input_fn: &mut I, output_fn: &mut O) -> Result<(), ExecutionError>
@@ -210,15 +214,14 @@ impl Program {
             return Err(ExecutionError::ProgramHalt);
         }
 
-        /*
-        println!(
-            "{} {}, {:?}",
-            self.name, self.instruction_index, instruction
-        );
-        */
+        if self.debug {
+            println!(
+                "{} {}, {:?}",
+                self.name, self.instruction_index, instruction
+            );
+        }
 
         self.instruction_index += 1;
-        self.output = None;
 
         let mut binary_op = |op_fn: &dyn Fn(i64, i64) -> i64| {
             let val1 = read(
@@ -265,7 +268,6 @@ impl Program {
                     instruction.param_modes[0],
                     self.mem_offset,
                 );
-                self.output = Some(val);
                 output_fn(val);
                 self.instruction_index += 1;
             }
