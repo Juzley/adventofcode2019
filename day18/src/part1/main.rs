@@ -1,7 +1,8 @@
-use pathfinding::prelude::dijkstra;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 type Coords = (usize, usize);
 
@@ -36,7 +37,7 @@ struct Map {
     // Map from a tile (the entrance or a key) to a vector containing
     // the keys that can be reached from that key, the distance for
     // each key, and any doors that need to be unlocked.
-    reachability: HashMap<Tile, Vec<(char, usize, Vec<char>)>>,
+    reachability: HashMap<Tile, Vec<(char, usize, HashSet<char>)>>,
 }
 
 impl Map {
@@ -69,6 +70,13 @@ impl Map {
         }
     }
 
+    fn from_file(filename: &str) -> Self {
+        let file = File::open(filename).unwrap();
+        let reader = BufReader::new(file);
+        let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
+        Map::from_lines(&lines)
+    }
+
     fn get_neighbouring_tiles(&self, coords: Coords) -> Vec<Coords> {
         let mut neighbours = Vec::new();
         if coords.0 > 0 {
@@ -91,12 +99,12 @@ impl Map {
         self.tiles[coords.1][coords.0]
     }
 
-    fn find_keys_from_coords(self: &Self, coords: Coords) -> Vec<(char, usize, Vec<char>)> {
-        let mut keys: HashMap<char, (usize, Vec<char>)> = HashMap::new();
+    fn find_keys_from_coords(self: &Self, coords: Coords) -> Vec<(char, usize, HashSet<char>)> {
+        let mut keys: HashMap<char, (usize, HashSet<char>)> = HashMap::new();
 
         let mut visited: HashSet<Coords> = HashSet::new();
-        let mut queue: VecDeque<(Coords, usize, Vec<char>)> = VecDeque::new();
-        queue.push_back((coords, 0, Vec::new()));
+        let mut queue: VecDeque<(Coords, usize, HashSet<char>)> = VecDeque::new();
+        queue.push_back((coords, 0, HashSet::new()));
 
         while !queue.is_empty() {
             let (coords, d, required_keys) = queue.pop_front().unwrap();
@@ -116,7 +124,7 @@ impl Map {
                     }
                     Tile::Door(c) => {
                         let mut new_required_keys = required_keys.clone();
-                        new_required_keys.push(c);
+                        new_required_keys.insert(c);
                         queue.push_back((coords, distance, new_required_keys));
                     }
                     Tile::Floor | Tile::Entrance => {
@@ -143,23 +151,52 @@ impl Map {
         self.reachability.extend(key_info);
     }
 
-    fn find_shortest_path(&self, keys: HashSet<char>, tile: Tile) -> u64 {
-        /*reachability = self.reachability[tile]
-        .iter()
-        .filter(|(c, _, req_keys)| // filter for req keys that are all in the keys we have)
-        .map(|(c, d, |)
-        */
+    fn make_memo_key(key: char, keys: &HashSet<char>) -> String {
+        let mut keyvec = Vec::new();
+        for c in keys {
+            keyvec.push(*c);
+        }
+        keyvec.sort();
 
-        0
+        format!("{}{}", key.to_string(), keyvec.iter().collect::<String>())
+    }
+
+    fn find_shortest_path(
+        &self,
+        keys: HashSet<char>,
+        tile: Tile,
+        memo: &mut HashMap<String, usize>,
+    ) -> usize {
+        let reachability: Vec<usize> = self.reachability[&tile]
+            .iter()
+            .filter(|(c, _, req_keys)| !keys.contains(c) && req_keys.is_subset(&keys))
+            .map(|(c, d, _)| {
+                let memo_key = Map::make_memo_key(*c, &keys);
+                if let Some(distance) = memo.get(&memo_key) {
+                    d + *distance
+                } else {
+                    let mut keys = keys.clone();
+                    keys.insert(*c);
+                    let distance = self.find_shortest_path(keys, Tile::Key(*c), memo);
+                    let _ = memo.insert(memo_key, distance);
+                    d + distance
+                }
+            })
+            .collect();
+
+        if reachability.is_empty() {
+            return 0;
+        } else {
+            return *reachability.iter().min().unwrap();
+        }
     }
 }
 
 fn main() {
-    let mut map = Map::from_lines(&vec![
-        String::from("#########"),
-        String::from("#b.A.@.a#"),
-        String::from("#########"),
-    ]);
+    let mut map = Map::from_file("input");
     map.build_reachability();
     println!("{:?}", map);
+
+    let shortest = map.find_shortest_path(HashSet::new(), Tile::Entrance, &mut HashMap::new());
+    println!("{}", shortest);
 }
