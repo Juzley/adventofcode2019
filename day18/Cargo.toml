@@ -4,12 +4,4 @@ version = "0.1.0"
 authors = ["Juzley <juzley@gmail.com>"]
 edition = "2018"
 
-[[bin]]
-name = "part1"
-path = "src/part1/main.rs"
-
-[[bin]]
-name = "part2"
-path = "src/part2/main.rs"
-
 [dependencies]
