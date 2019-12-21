@@ -1,32 +1,39 @@
-use pathfinding::prelude::{absdiff, astar};
+use pathfinding::prelude::dijkstra;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-type Coords = (usize, usize);
+type Coords2D = (usize, usize);
+type Coords3D = (usize, usize, usize);
 
 #[derive(Debug)]
 enum Tile {
     Empty,
     Floor,
     Wall,
-    Warp(Coords),
+    Warp(Coords2D),
 }
 
 #[derive(Debug)]
 struct Map {
     tiles: Vec<Vec<Tile>>,
-    warps: Vec<Coords>,
-    start: Coords,
-    end: Coords,
+    warps: Vec<Coords2D>,
+    start: Coords3D,
+    end: Coords3D,
+}
+
+#[derive(Copy, Clone)]
+enum Part {
+    One,
+    Two,
 }
 
 impl Map {
-    fn find_tile_labels(coords: Coords, lines: &Vec<Vec<char>>) -> Option<String> {
+    fn find_tile_labels(coords: Coords2D, lines: &Vec<Vec<char>>) -> Option<String> {
         let label_chars = 'A'..='Z';
 
         let first = lines[coords.1 - 2][coords.0];
-        let second = lines[coords.1 - 1][coords.0];        
+        let second = lines[coords.1 - 1][coords.0];
         if label_chars.contains(&first) && label_chars.contains(&second) {
             return Some(vec![first, second].iter().collect::<String>());
         }
@@ -53,7 +60,7 @@ impl Map {
     }
 
     fn from_lines(lines: &Vec<String>) -> Self {
-        let mut warps: HashMap<String, Coords> = HashMap::new();
+        let mut warps: HashMap<String, Coords2D> = HashMap::new();
         let mut warps_vec = Vec::new();
 
         let mut start = None;
@@ -93,13 +100,13 @@ impl Map {
                             let label = label.unwrap();
                             match label.as_ref() {
                                 "AA" => {
-                                    start = Some(coords);
+                                    start = Some((coords.0, coords.1, 0));
                                     Tile::Floor
-                                },
+                                }
                                 "ZZ" => {
-                                    end = Some(coords);
+                                    end = Some((coords.0, coords.1, 0));
                                     Tile::Floor
-                                },
+                                }
                                 _ => {
                                     warps_vec.push(coords);
                                     if let Some(warp_coords) = warps.get(&label) {
@@ -113,12 +120,12 @@ impl Map {
                                         warps.insert(label, coords);
                                         Tile::Floor
                                     }
-                                },
+                                }
                             }
                         } else {
                             Tile::Floor
                         }
-                    },
+                    }
                     _ => Tile::Empty,
                 };
                 tiles[y].push(tile);
@@ -140,87 +147,86 @@ impl Map {
         Map::from_lines(&lines)
     }
 
-    fn get_neighbours(&self, coords: Coords) -> Vec<Coords> {
-        let mut neighbours: Vec<Coords> = Vec::new();
+    fn get_warp_location(&self, current_coords: Coords3D, warp_coords: Coords2D, part: Part) -> Option<Coords3D> {
+        match part {
+            Part::One => Some((warp_coords.0, warp_coords.1, current_coords.2)),
+            Part::Two => {
+                if current_coords.0 == 0 || current_coords.1 == 0 ||
+                    current_coords.0 == self.tiles[0].len() - 1 ||
+                    current_coords.1 == self.tiles.len() - 1 {
+                    // This is on the outer edge of the map, go up a level
+                    // if we can (ie. not at the top level)
+                    if current_coords.2 > 0 {
+                        Some((warp_coords.0, warp_coords.1, current_coords.2 - 1))
+                    } else {
+                        None
+                    }
+                } else {
+                    Some((warp_coords.0, warp_coords.1, current_coords.2 + 1))
+                }
+            },
+        }
+    }
+
+    fn get_neighbours(&self, coords: Coords3D, part: Part) -> Vec<Coords3D> {
+        let mut neighbours: Vec<Coords3D> = Vec::new();
 
         // If this is a warp tile, add the other end as a neighbour.
         match self.tiles[coords.1][coords.0] {
-            Tile::Warp(c) => neighbours.push(c),
+            Tile::Warp(c) => {
+                let nbr = self.get_warp_location(coords, c, part);
+                if nbr.is_some() {
+                    neighbours.push(nbr.unwrap());
+                }
+            },
             _ => (),
         }
 
         // Add "normal" neighbours.
         if coords.0 > 0 {
-            neighbours.push((coords.0 - 1, coords.1));
+            neighbours.push((coords.0 - 1, coords.1, coords.2));
         }
         if coords.0 < self.tiles[0].len() - 1 {
-            neighbours.push((coords.0 + 1, coords.1));
+            neighbours.push((coords.0 + 1, coords.1, coords.2));
         }
         if coords.1 > 0 {
-            neighbours.push((coords.0, coords.1 - 1));
+            neighbours.push((coords.0, coords.1 - 1, coords.2));
         }
         if coords.1 < self.tiles.len() - 1 {
-            neighbours.push((coords.0, coords.1 + 1));
+            neighbours.push((coords.0, coords.1 + 1, coords.2));
         }
 
         neighbours
             .iter()
             .cloned()
-            .filter(|(x, y)|
-                match self.tiles[*y][*x] {
-                    Tile::Floor => true,
-                    Tile::Warp(_) => true,
-                    _ => false,
-                }
-            )
+            .filter(|(x, y, _)| match self.tiles[*y][*x] {
+                Tile::Floor => true,
+                Tile::Warp(_) => true,
+                _ => false,
+            })
             .collect()
     }
 
-    fn find_nearest_warp(&self, coords: Coords) -> Coords {
-        *self.warps
-            .iter()
-            .map(|c| (c, absdiff(coords.0, c.0) + absdiff(coords.1, c.1)))
-            .min_by(|(_, d1), (_, d2)| d1.cmp(d2))
-            .unwrap()
-            .0
-    }
-
-    fn find_path_len(&self) -> usize {
-        let distance = |&coords: &Coords| {
-            let mhd = |c1: Coords, c2: Coords| { absdiff(c1.0, c2.0) + absdiff(c1.1, c2.1) };
-
-            // Find the distance to the goal from the nearest teleporter.
-            let warp_start_coords = self.find_nearest_warp(coords);
-            let warp_end_coords = match self.tiles[warp_start_coords.1][warp_start_coords.0] {
-                Tile::Warp(c) => c,
-                _ => panic!("Malformed warp"),
-            };
-
-            let warp_distance = mhd(coords, warp_start_coords) + mhd(warp_end_coords, self.end);
-            let direct_distance = mhd(coords, self.end);
-
-            // Use the minimum of the distance via the nearest teleporter, and the
-            // distance without using a teleporter.
-            std::cmp::min(direct_distance, warp_distance)
-        };
-
-        let successors = |&coords: &Coords| -> Vec<(Coords, usize)> {
-            self.get_neighbours(coords)
+    fn find_path_len(&self, part: Part) -> usize {
+        let successors = |&coords: &Coords3D| -> Vec<(Coords3D, usize)> {
+            self.get_neighbours(coords, part)
                 .into_iter()
                 .map(|coords| (coords, 1))
                 .collect()
         };
 
-        return astar(&self.start, successors, distance, |&coords| coords == self.end)
-            .map(|tup| tup.1)
-            .unwrap()
+        let path = dijkstra(&self.start, successors, |&coords| coords == self.end);
+        path.map(|tup| tup.1).unwrap()
     }
 }
 
 fn main() {
     let map = Map::from_file("input");
-    let len = map.find_path_len();
-    println!("Shortest Path: {:?}", len);
+    let len = map.find_path_len(Part::One);
+    println!("Shortest Path for part 1: {:?}", len);
+
+    let len = map.find_path_len(Part::Two);
+    println!("Shortest Path for part 2: {:?}", len);
 }
 
 #[cfg(test)]
@@ -251,7 +257,7 @@ mod tests {
             String::from("             Z       "),
         ]);
 
-        let len = map.find_path_len();
+        let len = map.find_path_len(Part::One);
         assert_eq!(len, 23);
     }
 
@@ -297,7 +303,53 @@ mod tests {
             String::from("           U   P   P               "),
         ]);
 
-        let len = map.find_path_len();
+        let len = map.find_path_len(Part::One);
         assert_eq!(len, 58);
+    }
+
+    #[test]
+    fn pt2_ex2() {
+        let map = Map::from_lines(&vec![
+            String::from("             Z L X W       C                 "),
+            String::from("             Z P Q B       K                 "),
+            String::from("  ###########.#.#.#.#######.###############  "),
+            String::from("  #...#.......#.#.......#.#.......#.#.#...#  "),
+            String::from("  ###.#.#.#.#.#.#.#.###.#.#.#######.#.#.###  "),
+            String::from("  #.#...#.#.#...#.#.#...#...#...#.#.......#  "),
+            String::from("  #.###.#######.###.###.#.###.###.#.#######  "),
+            String::from("  #...#.......#.#...#...#.............#...#  "),
+            String::from("  #.#########.#######.#.#######.#######.###  "),
+            String::from("  #...#.#    F       R I       Z    #.#.#.#  "),
+            String::from("  #.###.#    D       E C       H    #.#.#.#  "),
+            String::from("  #.#...#                           #...#.#  "),
+            String::from("  #.###.#                           #.###.#  "),
+            String::from("  #.#....OA                       WB..#.#..ZH"),
+            String::from("  #.###.#                           #.#.#.#  "),
+            String::from("CJ......#                           #.....#  "),
+            String::from("  #######                           #######  "),
+            String::from("  #.#....CK                         #......IC"),
+            String::from("  #.###.#                           #.###.#  "),
+            String::from("  #.....#                           #...#.#  "),
+            String::from("  ###.###                           #.#.#.#  "),
+            String::from("XF....#.#                         RF..#.#.#  "),
+            String::from("  #####.#                           #######  "),
+            String::from("  #......CJ                       NM..#...#  "),
+            String::from("  ###.#.#                           #.###.#  "),
+            String::from("RE....#.#                           #......RF"),
+            String::from("  ###.###        X   X       L      #.#.#.#  "),
+            String::from("  #.....#        F   Q       P      #.#.#.#  "),
+            String::from("  ###.###########.###.#######.#########.###  "),
+            String::from("  #.....#...#.....#.......#...#.....#.#...#  "),
+            String::from("  #####.#.###.#######.#######.###.###.#.#.#  "),
+            String::from("  #.......#.......#.#.#.#.#...#...#...#.#.#  "),
+            String::from("  #####.###.#####.#.#.#.#.###.###.#.###.###  "),
+            String::from("  #.......#.....#.#...#...............#...#  "),
+            String::from("  #############.#.#.###.###################  "),
+            String::from("               A O F   N                     "),
+            String::from("               A A D   M                     "),
+        ]);
+
+        let len = map.find_path_len(Part::Two);
+        assert_eq!(len, 396);
     }
 }
